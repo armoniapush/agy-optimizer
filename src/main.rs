@@ -252,7 +252,10 @@ fn handle_pre_tool() {
         
         let cmd_lower = cmd.to_lowercase();
         let has_redirect = cmd_lower.contains('>') || cmd_lower.contains("out-file") 
-            || cmd_lower.contains("set-content") || cmd_lower.contains("| tee");
+            || cmd_lower.contains("set-content") || cmd_lower.contains("add-content")
+            || cmd_lower.contains("copy-item") || cmd_lower.contains("move-item")
+            || cmd_lower.contains("new-item") || cmd_lower.contains("writefilesync")
+            || cmd_lower.contains("write_text") || cmd_lower.contains("| tee");
 
         let targets_prod = cmd_lower.contains("src/") || cmd_lower.contains("src\\") 
             || cmd_lower.contains("app/") || cmd_lower.contains("app\\")
