@@ -1,7 +1,7 @@
 {
   "name": "agy-optimizer",
   "displayName": "AGY Context & Harness Optimizer",
-  "version": "1.0.0",
+  "version": "2.2.0",
   "description": "Ultra-lightweight deterministic railway guard, KV-cache preservation, invisible Engram memory lifecycle, and anti-rot architecture for Antigravity. Built to enforce Gentle AI (ODD) and Engram protocols mechanically.",
   "author": {
     "name": "Antigravity Community (based on Gentle AI / Gentleman Programming)"

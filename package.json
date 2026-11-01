@@ -1,14 +1,16 @@
 {
   "name": "agy-optimizer",
-  "version": "1.0.0",
+  "version": "2.2.0",
   "description": "Ultra-lightweight deterministic railway guard, KV-cache preservation, and anti-rot harness for Google Antigravity.",
   "main": "bin/cli.js",
   "bin": {
     "agy-optimizer": "./bin/cli.js"
   },
   "scripts": {
-    "postinstall": "node bin/cli.js install",
-    "test": "node bin/cli.js verify"
+    "sync": "node bin/cli.js sync",
+    "update-gentle": "node bin/cli.js update-gentle",
+    "verify": "node bin/cli.js verify",
+    "install": "node bin/cli.js install"
   },
   "keywords": [
     "antigravity",
