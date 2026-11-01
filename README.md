@@ -8,20 +8,20 @@ Deterministic native railway guard, KV-cache prefix protection, invisible Engram
 
 ```
 [Antigravity Execution Loop]
-         ¦
+         ï¿½
          +-? SessionStart ----? agy-hook (Engram L2 Sync)
-         ¦                      - Invisible memory lifecycle
-         ¦
+         ï¿½                      - Invisible memory lifecycle
+         ï¿½
          +-? PreInvocation ---? agy-hook (ReFold Context Engine - arXiv:2610.07863)
-         ¦                      - Invariant ephemeral message projection
-         ¦                      - 100% KV-Cache prefix hit rate preservation
-         ¦
+         ï¿½                      - Invariant ephemeral message projection
+         ï¿½                      - 100% KV-Cache prefix hit rate preservation
+         ï¿½
          +-? PreToolUse ------? agy-hook (Rust Policy Evaluator - sub-2ms)
-         ¦                      - Scaffolding & tests: Permissive (no compilation deadlocks)
-         ¦                      - Zero-Trust odd/receipts/ guard (anti-forgery)
-         ¦                      - Shell Write Guard: Blocks terminal redirects to src/
-         ¦                      - Production code: Requires active ODD task in odd/tasks/
-         ¦
+         ï¿½                      - Scaffolding & tests: Permissive (no compilation deadlocks)
+         ï¿½                      - Zero-Trust odd/receipts/ guard (anti-forgery)
+         ï¿½                      - Shell Write Guard: Blocks terminal redirects to src/
+         ï¿½                      - Production code: Requires active ODD task in odd/tasks/
+         ï¿½
          +-? Stop ------------? agy-hook (The Gatekeeper / Autonomous Closure)
                                 - Tests passing & receipt verified?
                                   +- NO (cycle < 20) -? "decision": "continue" (Forced Closed Loop)
@@ -48,10 +48,10 @@ Deterministic native railway guard, KV-cache prefix protection, invisible Engram
 
 ```bash
 # 1-step installer
-npx agy-optimizer install
+npx github:armoniapush/agy-optimizer install
 
 # Check status and components
-npx agy-optimizer verify
+npx github:armoniapush/agy-optimizer verify
 ```
 
 ### Mode 2: Native Antigravity Plugin
