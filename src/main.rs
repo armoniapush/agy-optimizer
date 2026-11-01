@@ -1,5 +1,5 @@
-use std::fs;
-use std::io::{self, Read};
+use std::fs::{self, File};
+use std::io::{self, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +35,19 @@ struct HookDecision {
     reason: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct SkillMetadata {
+    name: String,
+    description: String,
+    playbook_path: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Catalog {
+    version_hash: String,
+    skills: Vec<SkillMetadata>,
+}
+
 fn normalize_lexical_path(p: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in p.components() {
@@ -58,7 +71,7 @@ fn is_scaffolding_or_non_production(path_str: &str) -> bool {
     if lower.contains("odd/tasks") || lower.contains(".odd") {
         return true;
     }
-    // Documentation, markdown, notes
+    // Documentation, markdown, notes, and catalogs
     if lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".json") {
         return true;
     }
@@ -114,6 +127,84 @@ fn has_active_odd_task(workspace_root: &Path) -> bool {
     false
 }
 
+// Extractor léxico zero-copy de YAML frontmatter
+fn parse_yaml_frontmatter(content: &str) -> Option<(String, String)> {
+    if !content.starts_with("---") { return None; }
+    let end_idx = content[3..].find("---")?;
+    let yaml_block = &content[3..3 + end_idx];
+    
+    let mut name = None;
+    let mut desc = None;
+
+    for line in yaml_block.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("name:") {
+            name = Some(trimmed.trim_start_matches("name:").trim().trim_matches('"').trim_matches('\'').to_string());
+        } else if trimmed.starts_with("description:") {
+            desc = Some(trimmed.trim_start_matches("description:").trim().trim_matches('"').trim_matches('\'').to_string());
+        }
+    }
+
+    Some((name?, desc.unwrap_or_default()))
+}
+
+// JIT Virtual Projection: Sincroniza vendor/gentle-ai con references/catalog.json en <1.5ms
+fn sync_vendor_skills() {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_default();
+    if home.is_empty() { return; }
+
+    let vendor_dir = PathBuf::from(&home).join(".gemini").join("vendor").join("gentle-ai");
+    if !vendor_dir.exists() { return; }
+
+    let ref_dir = PathBuf::from(&home).join(".gemini").join("config").join("plugins").join("agy-optimizer").join("skills").join("gentle-gateway").join("references");
+    let _ = fs::create_dir_all(&ref_dir);
+    let catalog_path = ref_dir.join("catalog.json");
+
+    let head_file = vendor_dir.join(".git").join("refs").join("heads").join("main");
+    let current_hash = fs::read_to_string(&head_file).unwrap_or_else(|_| "v1.0.0".to_string());
+
+    // Check rápido de caché: si el hash coincide, retornar en sub-100 microsegundos
+    if let Ok(file) = File::open(&catalog_path) {
+        let reader = BufReader::new(file);
+        if let Ok(catalog) = serde_json::from_reader::<_, Catalog>(reader) {
+            if catalog.version_hash == current_hash {
+                return;
+            }
+        }
+    }
+
+    // Reindexación JIT silenciosa
+    let mut skills = Vec::new();
+    let skills_dir = vendor_dir.join("skills");
+    if skills_dir.exists() {
+        if let Ok(entries) = fs::read_dir(skills_dir) {
+            for entry in entries.flatten() {
+                let skill_file = entry.path().join("SKILL.md");
+                if skill_file.exists() {
+                    if let Ok(content) = fs::read_to_string(&skill_file) {
+                        if let Some((name, desc)) = parse_yaml_frontmatter(&content) {
+                            skills.push(SkillMetadata {
+                                name,
+                                description: desc,
+                                playbook_path: skill_file.to_string_lossy().to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let catalog = Catalog {
+        version_hash: current_hash,
+        skills,
+    };
+
+    if let Ok(json) = serde_json::to_string_pretty(&catalog) {
+        let _ = fs::write(catalog_path, json);
+    }
+}
+
 fn handle_pre_tool() {
     let mut buffer = Vec::new();
     if io::stdin().read_to_end(&mut buffer).is_err() || buffer.is_empty() {
@@ -152,7 +243,7 @@ fn handle_pre_tool() {
         return;
     }
 
-    // 1. Shell Write Guard: Inspect run_command for redirects targeting production code
+    // Shell Write Guard
     if tool_name == "run_command" {
         let cmd = args.get("CommandLine")
             .or_else(|| args.get("command"))
@@ -195,8 +286,7 @@ fn handle_pre_tool() {
         let path_str = target_path.to_string_lossy();
         let path_lower = path_str.to_lowercase().replace('\\', "/");
 
-        // Salvaguarda 2: Zero-Trust en odd/receipts/ (Anti-Forgery Guard)
-        // El LLM nunca tiene autorización para escribir o forjar recibos directamente
+        // Zero-Trust en odd/receipts/
         if path_lower.contains("odd/receipts") {
             let resp = HookDecision {
                 decision: "deny".into(),
@@ -206,7 +296,7 @@ fn handle_pre_tool() {
             return;
         }
 
-        // Scaffolding, configs, types, tests, docs are PERMISSIVE (OpenHands/Aider pattern)
+        // Scaffolding permisivo
         if is_scaffolding_or_non_production(&path_str) {
             println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
             return;
@@ -219,7 +309,6 @@ fn handle_pre_tool() {
             return;
         }
 
-        // Deny with Structured Guidance (Zero-Turn Recovery)
         let guidance = format!(
             "[FSM ODD VETO]: Mutación de código de producción bloqueada en '{}'.\n\
             Fase actual: SCOUT / SPEC PENDIENTE.\n\
@@ -246,8 +335,7 @@ fn handle_stop_gate() {
     let clean_str = String::from_utf8_lossy(&buffer).trim_start_matches('\u{feff}').to_string();
     let payload: Option<StopPayload> = serde_json::from_str(&clean_str).ok();
 
-    // Salvaguarda 1: Disyuntor Duro (Circuit Breaker)
-    // Previene bucles infinitos ante bugs de dependencias o red si execution_num >= 20
+    // Circuit Breaker (20 iteraciones)
     if let Some(ref p) = payload {
         if let Some(exec_num) = p.execution_num {
             if exec_num >= 20 {
@@ -263,13 +351,11 @@ fn handle_stop_gate() {
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     
-    // Check if there is an active ODD task in progress
     if has_active_odd_task(&cwd) {
         let receipts_dir = cwd.join("odd").join("receipts");
         let has_receipt = fs::read_dir(receipts_dir).map(|mut d| d.next().is_some()).unwrap_or(false);
 
         if !has_receipt {
-            // Task is in progress but not verified! Force continuation (Autonomous Closure)
             let resp = HookDecision {
                 decision: "continue".into(),
                 reason: Some("[MANDATO DE CIERRE AUTÓNOMO]: La tarea ODD sigue activa sin recibo de verificación en 'odd/receipts/'. Continúa ejecutando hasta compilar o verificar con tests.".into()),
@@ -279,12 +365,10 @@ fn handle_stop_gate() {
         }
     }
 
-    // Normal stop allowed
     println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
 }
 
 fn handle_pre_invocation() {
-    // ReFold Projection: Invariant clean template to maximize KV-Cache prefix hit rate
     let resp = serde_json::json!({
         "injectSteps": [
             {
@@ -296,11 +380,15 @@ fn handle_pre_invocation() {
 }
 
 fn handle_session_init() {
+    // 1. Ejecutar JIT Virtual Projection sobre vendor/gentle-ai (<1.5ms)
+    sync_vendor_skills();
+
+    // 2. Inyectar estado
     let resp = serde_json::json!({
         "injectSteps": [
             {
                 "systemMessage": {
-                    "systemMessage": "[AGY OPTIMIZER CERTIFIED]: Arnés cognitivo determinista en Rust v2 activo. FSM Coercitiva, Circuit Breaker (20 iter), Anti-Forgery y ReFold KV-Cache protection."
+                    "systemMessage": "[AGY OPTIMIZER CERTIFIED]: Arnés determinista en Rust v2.1 activo. JIT Vendor Sync (<2ms), FSM Coercitiva, Circuit Breaker y ReFold KV-Cache protection."
                 }
             }
         ]

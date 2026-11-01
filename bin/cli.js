@@ -9,19 +9,19 @@ const HOME = os.homedir();
 const CONFIG_ROOT = path.join(HOME, '.gemini', 'config');
 const PLUGIN_TARGET = path.join(CONFIG_ROOT, 'plugins', 'agy-optimizer');
 const BIN_TARGET = path.join(CONFIG_ROOT, 'bin');
+const VENDOR_TARGET = path.join(HOME, '.gemini', 'vendor', 'gentle-ai');
 
 const action = process.argv[2] || 'install';
 
 function install() {
-  console.log('\x1b[36m%s\x1b[0m', '=== AGY Optimizer CLI Installer ===');
+  console.log('\x1b[36m%s\x1b[0m', '=== AGY Optimizer CLI Installer v2.1 ===');
 
-  // 1. Ensure target directories
   fs.mkdirSync(PLUGIN_TARGET, { recursive: true });
   fs.mkdirSync(BIN_TARGET, { recursive: true });
 
   const rootDir = path.resolve(__dirname, '..');
 
-  // 2. Copy binary
+  // 1. Copy binary
   const binarySource = path.join(rootDir, 'bin', 'agy-hook.exe');
   const binaryDest = path.join(BIN_TARGET, 'agy-hook.exe');
   if (fs.existsSync(binarySource)) {
@@ -29,7 +29,7 @@ function install() {
     console.log('\x1b[32m%s\x1b[0m', `[OK] Native binary installed: ${binaryDest}`);
   }
 
-  // 3. Copy plugin contents into ~/.gemini/config/plugins/agy-optimizer
+  // 2. Copy plugin bundle
   const itemsToCopy = ['plugin.json', 'hooks.json', 'rules', 'skills', 'bin'];
   for (const item of itemsToCopy) {
     const src = path.join(rootDir, item);
@@ -40,31 +40,40 @@ function install() {
   }
   console.log('\x1b[32m%s\x1b[0m', `[OK] Plugin package installed: ${PLUGIN_TARGET}`);
 
-  // 4. Also register global hooks.json fallback
-  const globalHooksSrc = path.join(rootDir, 'hooks', 'hooks.json');
+  // 3. Global hooks fallback
   const globalHooksDest = path.join(CONFIG_ROOT, 'hooks.json');
-  if (fs.existsSync(globalHooksSrc)) {
-    fs.copyFileSync(globalHooksSrc, globalHooksDest);
+  const pluginHooksSrc = path.join(PLUGIN_TARGET, 'hooks.json');
+  if (fs.existsSync(pluginHooksSrc)) {
+    fs.copyFileSync(pluginHooksSrc, globalHooksDest);
     console.log('\x1b[32m%s\x1b[0m', `[OK] Global hooks linked: ${globalHooksDest}`);
   }
 
-  // 5. Update config.json to enable agy-optimizer
-  const configJsonPath = path.join(CONFIG_ROOT, 'config.json');
-  if (fs.existsSync(configJsonPath)) {
+  // 4. Update-gentle clone if not present
+  if (!fs.existsSync(VENDOR_TARGET)) {
+    console.log('\x1b[33m%s\x1b[0m', `Cloning gentle-ai into shadow vendor directory: ${VENDOR_TARGET}`);
     try {
-      const config = JSON.parse(fs.readFileSync(configJsonPath, 'utf8'));
-      if (!config.plugins) config.plugins = {};
-      if (!config.plugins['agy-optimizer']) {
-        config.plugins['agy-optimizer'] = { enabled: true };
-        fs.writeFileSync(configJsonPath, JSON.stringify(config, null, 2), 'utf8');
-        console.log('\x1b[32m%s\x1b[0m', `[OK] Plugin enabled in config.json`);
-      }
-    } catch (e) {
-      console.warn('Could not update config.json:', e.message);
+      execSync(`git clone https://github.com/Gentleman-Programming/gentle-ai.git "${VENDOR_TARGET}"`, { stdio: 'inherit' });
+    } catch(e) {
+      console.warn('Could not clone gentle-ai automatically. You can clone manually into ~/.gemini/vendor/gentle-ai');
     }
   }
 
-  console.log('\x1b[32m%s\x1b[0m', '\nInstallation successfully completed! AGY is guarded and rot-immune.');
+  console.log('\x1b[32m%s\x1b[0m', '\nInstallation successfully completed! Shadow Vendor Sync is active.');
+}
+
+function updateGentle() {
+  console.log('\x1b[36m%s\x1b[0m', '=== Updating Gentle-AI Shadow Vendor ===');
+  if (fs.existsSync(VENDOR_TARGET)) {
+    try {
+      execSync('git pull origin main || git pull origin master', { cwd: VENDOR_TARGET, stdio: 'inherit' });
+      console.log('\x1b[32m%s\x1b[0m', '[OK] Gentle-AI updated. JIT sync will reindex catalog on next SessionStart.');
+    } catch(e) {
+      console.error('Failed to pull gentle-ai:', e.message);
+    }
+  } else {
+    console.log('\x1b[33m%s\x1b[0m', `Vendor directory not found at ${VENDOR_TARGET}. Cloning fresh...`);
+    execSync(`git clone https://github.com/Gentleman-Programming/gentle-ai.git "${VENDOR_TARGET}"`, { stdio: 'inherit' });
+  }
 }
 
 function verify() {
@@ -72,19 +81,24 @@ function verify() {
   const binary = path.join(BIN_TARGET, 'agy-hook.exe');
   const hooks = path.join(CONFIG_ROOT, 'hooks.json');
   const plugin = path.join(PLUGIN_TARGET, 'plugin.json');
+  const vendor = VENDOR_TARGET;
 
   console.log('Binary exists:', fs.existsSync(binary));
   console.log('Hooks.json exists:', fs.existsSync(hooks));
   console.log('Plugin exists:', fs.existsSync(plugin));
+  console.log('Shadow Vendor exists:', fs.existsSync(vendor));
 }
 
 switch (action) {
   case 'install':
     install();
     break;
+  case 'update-gentle':
+    updateGentle();
+    break;
   case 'verify':
     verify();
     break;
   default:
-    console.log(`Unknown action: ${action}. Use 'install' or 'verify'.`);
+    console.log(`Unknown action: ${action}. Use 'install', 'update-gentle', or 'verify'.`);
 }
