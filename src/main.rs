@@ -19,6 +19,8 @@ struct ToolCallInternal {
 
 #[derive(Deserialize, Debug)]
 struct StopPayload {
+    #[serde(rename = "executionNum")]
+    execution_num: Option<usize>,
     #[serde(rename = "terminationReason")]
     termination_reason: Option<String>,
     error: Option<String>,
@@ -31,20 +33,6 @@ struct HookDecision {
     decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
-}
-
-#[derive(Serialize)]
-struct InjectedStep {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system_message: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ephemeral_message: Option<String>,
-}
-
-#[derive(Serialize)]
-struct PreInvocationResponse {
-    #[serde(rename = "injectSteps")]
-    inject_steps: Vec<serde_json::Value>,
 }
 
 fn normalize_lexical_path(p: &Path) -> PathBuf {
@@ -67,7 +55,7 @@ fn is_scaffolding_or_non_production(path_str: &str) -> bool {
     let lower = path_str.to_lowercase().replace('\\', "/");
     
     // ODD tasks and specs are always permissive
-    if lower.contains("odd/tasks") || lower.contains("odd/receipts") || lower.contains(".odd") {
+    if lower.contains("odd/tasks") || lower.contains(".odd") {
         return true;
     }
     // Documentation, markdown, notes
@@ -164,6 +152,37 @@ fn handle_pre_tool() {
         return;
     }
 
+    // 1. Shell Write Guard: Inspect run_command for redirects targeting production code
+    if tool_name == "run_command" {
+        let cmd = args.get("CommandLine")
+            .or_else(|| args.get("command"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        
+        let cmd_lower = cmd.to_lowercase();
+        let has_redirect = cmd_lower.contains('>') || cmd_lower.contains("out-file") 
+            || cmd_lower.contains("set-content") || cmd_lower.contains("| tee");
+
+        let targets_prod = cmd_lower.contains("src/") || cmd_lower.contains("src\\") 
+            || cmd_lower.contains("app/") || cmd_lower.contains("app\\")
+            || cmd_lower.contains("odd/receipts");
+
+        if has_redirect && targets_prod {
+            let ws = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            if !has_active_odd_task(&ws) || cmd_lower.contains("odd/receipts") {
+                let resp = HookDecision {
+                    decision: "deny".into(),
+                    reason: Some("[FSM SHELL VETO]: Intento de redirección o mutación de código de producción vía terminal bloqueado. Redacta primero la especificación en odd/tasks/.".into()),
+                };
+                println!("{}", serde_json::to_string(&resp).unwrap());
+                return;
+            }
+        }
+
+        println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
+        return;
+    }
+
     if tool_name == "write_file" || tool_name == "edit_file" {
         let raw_path = args.get("Path")
             .or_else(|| args.get("path"))
@@ -174,21 +193,33 @@ fn handle_pre_tool() {
 
         let target_path = normalize_lexical_path(Path::new(raw_path));
         let path_str = target_path.to_string_lossy();
+        let path_lower = path_str.to_lowercase().replace('\\', "/");
 
-        // 1. Scaffolding, configs, types, tests, docs are PERMISSIVE (OpenHands/Aider pattern)
+        // Salvaguarda 2: Zero-Trust en odd/receipts/ (Anti-Forgery Guard)
+        // El LLM nunca tiene autorización para escribir o forjar recibos directamente
+        if path_lower.contains("odd/receipts") {
+            let resp = HookDecision {
+                decision: "deny".into(),
+                reason: Some("[ZERO-TRUST VETO]: Prohibida la escritura directa en 'odd/receipts/'. Los recibos de verificación solo son emitidos por el ejecutor tras constatar el paso de la suite de pruebas en exit code 0.".into()),
+            };
+            println!("{}", serde_json::to_string(&resp).unwrap());
+            return;
+        }
+
+        // Scaffolding, configs, types, tests, docs are PERMISSIVE (OpenHands/Aider pattern)
         if is_scaffolding_or_non_production(&path_str) {
             println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
             return;
         }
 
-        // 2. Production code mutation requires active ODD task
+        // Production code mutation requires active ODD task
         let ws = resolve_workspace_root(&target_path);
         if has_active_odd_task(&ws) {
             println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
             return;
         }
 
-        // 3. Deny with Structured Guidance (Zero-Turn Recovery)
+        // Deny with Structured Guidance (Zero-Turn Recovery)
         let guidance = format!(
             "[FSM ODD VETO]: Mutación de código de producción bloqueada en '{}'.\n\
             Fase actual: SCOUT / SPEC PENDIENTE.\n\
@@ -212,16 +243,33 @@ fn handle_stop_gate() {
     let mut buffer = Vec::new();
     let _ = io::stdin().read_to_end(&mut buffer);
 
+    let clean_str = String::from_utf8_lossy(&buffer).trim_start_matches('\u{feff}').to_string();
+    let payload: Option<StopPayload> = serde_json::from_str(&clean_str).ok();
+
+    // Salvaguarda 1: Disyuntor Duro (Circuit Breaker)
+    // Previene bucles infinitos ante bugs de dependencias o red si execution_num >= 20
+    if let Some(ref p) = payload {
+        if let Some(exec_num) = p.execution_num {
+            if exec_num >= 20 {
+                let resp = HookDecision {
+                    decision: "allow".into(),
+                    reason: Some("[CIRCUIT_BREAKER_ABORT]: Límite de 20 iteraciones agotado sin verificación ODD. Deteniendo bucle cerrado para requerir intervención del usuario.".into()),
+                };
+                println!("{}", serde_json::to_string(&resp).unwrap());
+                return;
+            }
+        }
+    }
+
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     
     // Check if there is an active ODD task in progress
     if has_active_odd_task(&cwd) {
-        // In the future, check if receipt exists. If spec exists without receipt:
         let receipts_dir = cwd.join("odd").join("receipts");
         let has_receipt = fs::read_dir(receipts_dir).map(|mut d| d.next().is_some()).unwrap_or(false);
 
         if !has_receipt {
-            // Task is in progress but not closed! Force continuation (Claude Code autonomy pattern)
+            // Task is in progress but not verified! Force continuation (Autonomous Closure)
             let resp = HookDecision {
                 decision: "continue".into(),
                 reason: Some("[MANDATO DE CIERRE AUTÓNOMO]: La tarea ODD sigue activa sin recibo de verificación en 'odd/receipts/'. Continúa ejecutando hasta compilar o verificar con tests.".into()),
@@ -236,7 +284,7 @@ fn handle_stop_gate() {
 }
 
 fn handle_pre_invocation() {
-    // ReFold Projection: Inject clean ephemeral guidance without dirtying long-term transcript
+    // ReFold Projection: Invariant clean template to maximize KV-Cache prefix hit rate
     let resp = serde_json::json!({
         "injectSteps": [
             {
@@ -252,7 +300,7 @@ fn handle_session_init() {
         "injectSteps": [
             {
                 "systemMessage": {
-                    "systemMessage": "[AGY OPTIMIZER ACTIVE]: Arnés cognitivo determinista en Rust activo. FSM Coercitiva, ciclo ODD guiado y ReFold KV-Cache protection."
+                    "systemMessage": "[AGY OPTIMIZER CERTIFIED]: Arnés cognitivo determinista en Rust v2 activo. FSM Coercitiva, Circuit Breaker (20 iter), Anti-Forgery y ReFold KV-Cache protection."
                 }
             }
         ]
