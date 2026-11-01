@@ -1,24 +1,29 @@
 {
-  "agy-core-guard": {
-    "enabled": true,
-    "SessionStart": [
-      {
-        "type": "command",
-        "command": "./bin/agy-hook.exe session-init",
-        "timeout": 5
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "(write_file|edit_file)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./bin/agy-hook.exe pre-gate",
-            "timeout": 3
-          }
-        ]
-      }
-    ]
-  }
+  "version": 1,
+  "hooks": [
+    {
+      "type": "command",
+      "event": "SessionStart",
+      "command": "\"%USERPROFILE%\\.gemini\\config\\bin\\agy-hook.exe\" session-init",
+      "name": "agy-session-init"
+    },
+    {
+      "type": "command",
+      "event": "PreToolUse",
+      "command": "\"%USERPROFILE%\\.gemini\\config\\bin\\agy-hook.exe\" pre-gate",
+      "name": "agy-core-guard"
+    },
+    {
+      "type": "command",
+      "event": "PreInvocation",
+      "command": "\"%USERPROFILE%\\.gemini\\config\\bin\\agy-hook.exe\" pre-invocation",
+      "name": "agy-refold-guidance"
+    },
+    {
+      "type": "command",
+      "event": "Stop",
+      "command": "\"%USERPROFILE%\\.gemini\\config\\bin\\agy-hook.exe\" stop-gate",
+      "name": "agy-closure-gatekeeper"
+    }
+  ]
 }

@@ -1,133 +1,124 @@
-﻿use std::env;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[derive(Deserialize, Debug)]
-#[allow(non_snake_case)]
-struct HookInput {
-    toolCall: Option<ToolCall>,
-    workspacePaths: Option<Vec<String>>,
+struct ToolUsePayload {
+    tool_name: Option<String>,
+    tool_args: Option<serde_json::Value>,
+    #[serde(rename = "toolCall")]
+    tool_call: Option<ToolCallInternal>,
 }
 
 #[derive(Deserialize, Debug)]
-struct ToolCall {
-    #[allow(dead_code)]
+struct ToolCallInternal {
     name: Option<String>,
     args: Option<serde_json::Value>,
 }
 
+#[derive(Deserialize, Debug)]
+struct StopPayload {
+    #[serde(rename = "terminationReason")]
+    termination_reason: Option<String>,
+    error: Option<String>,
+    #[serde(rename = "fullyIdle")]
+    fully_idle: Option<bool>,
+}
+
 #[derive(Serialize)]
-struct PreToolOutput<'a> {
-    decision: &'a str,
+struct HookDecision {
+    decision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'a str>,
+    reason: Option<String>,
 }
 
-fn main() -> io::Result<()> {
-    let args: Vec<String> = env::args().collect();
-    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("pre-gate");
-
-    let mut raw_bytes = Vec::new();
-    let _ = io::stdin().read_to_end(&mut raw_bytes);
-
-    let clean_str = String::from_utf8_lossy(&raw_bytes);
-    let trimmed = clean_str.trim_start_matches('\u{feff}').trim();
-
-    match mode {
-        "pre-gate" => handle_pre_gate(trimmed),
-        "session-init" => handle_session_init(),
-        _ => allow(),
-    }
+#[derive(Serialize)]
+struct InjectedStep {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_message: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ephemeral_message: Option<String>,
 }
 
-fn extract_target_path(args: &serde_json::Value) -> Option<&str> {
-    for key in &["TargetFile", "targetFile", "Path", "path", "filePath", "filepath"] {
-        if let Some(val) = args.get(*key).and_then(|v| v.as_str()) {
-            return Some(val);
-        }
-    }
-    None
+#[derive(Serialize)]
+struct PreInvocationResponse {
+    #[serde(rename = "injectSteps")]
+    inject_steps: Vec<serde_json::Value>,
 }
 
-fn normalize_path(path: &Path) -> PathBuf {
+fn normalize_lexical_path(p: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {},
+    for component in p.components() {
+        match component {
             Component::ParentDir => {
                 normalized.pop();
-            },
-            c => normalized.push(c.as_os_str()),
+            }
+            Component::CurDir => {}
+            _ => {
+                normalized.push(component);
+            }
         }
     }
     normalized
 }
 
-fn is_spec_file(path_str: &str, workspaces: &[PathBuf]) -> bool {
-    let raw_path = Path::new(path_str);
-    let normalized = normalize_path(raw_path);
-    let norm_str = normalized.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-
-    let is_md = normalized.extension()
-        .map_or(false, |ext| ext.eq_ignore_ascii_case("md"));
-    if !is_md {
-        return false;
-    }
-
-    let parts: Vec<&str> = norm_str.trim_start_matches("./").split('/').filter(|s| !s.is_empty()).collect();
-    if parts.len() == 3 && parts[0] == "odd" && parts[1] == "tasks" {
+fn is_scaffolding_or_non_production(path_str: &str) -> bool {
+    let lower = path_str.to_lowercase().replace('\\', "/");
+    
+    // ODD tasks and specs are always permissive
+    if lower.contains("odd/tasks") || lower.contains("odd/receipts") || lower.contains(".odd") {
         return true;
     }
-
-    for ws in workspaces {
-        let ws_str = ws.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
-        let expected_prefix = format!("{}/odd/tasks/", ws_str.trim_end_matches('/'));
-        if norm_str.starts_with(&expected_prefix) {
-            let remainder = &norm_str[expected_prefix.len()..];
-            if !remainder.contains('/') {
-                return true;
-            }
-        }
+    // Documentation, markdown, notes
+    if lower.ends_with(".md") || lower.ends_with(".txt") || lower.ends_with(".json") {
+        return true;
+    }
+    // Configuration, dependencies, and types are scaffolding (OpenHands pattern)
+    if lower.ends_with("package.json") || lower.ends_with("cargo.toml") || lower.ends_with("tsconfig.json")
+       || lower.ends_with(".gitignore") || lower.ends_with("go.mod") || lower.ends_with("requirements.txt") {
+        return true;
+    }
+    // Tests are permissive for writing RED reproduction tests
+    if lower.contains("/tests/") || lower.contains("/test/") || lower.ends_with("_test.go")
+       || lower.ends_with(".spec.ts") || lower.ends_with(".test.ts") || lower.ends_with(".test.js") {
+        return true;
     }
 
     false
 }
 
-fn resolve_target_workspace(target_path_str: &str) -> Option<PathBuf> {
-    let raw_path = Path::new(target_path_str);
-    let mut current = if raw_path.is_file() || target_path_str.ends_with(".rs") || target_path_str.ends_with(".md") || target_path_str.ends_with(".json") || target_path_str.ends_with(".js") || target_path_str.ends_with(".ts") {
-        raw_path.parent()?
+fn resolve_workspace_root(target: &Path) -> PathBuf {
+    let mut curr = if target.is_dir() {
+        target.to_path_buf()
     } else {
-        raw_path
+        target.parent().unwrap_or(target).to_path_buf()
     };
 
-    loop {
-        let tasks = current.join("odd").join("tasks");
-        if tasks.exists() && tasks.is_dir() {
-            return Some(normalize_path(current));
+    while let Some(parent) = curr.parent() {
+        if curr.join("odd").exists() || curr.join(".git").exists() || curr.join("Cargo.toml").exists() || curr.join("package.json").exists() {
+            return curr;
         }
-        match current.parent() {
-            Some(parent) if parent != current => current = parent,
-            _ => break,
-        }
+        curr = parent.to_path_buf();
     }
-    None
+
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
 }
 
-fn has_active_task_in_workspaces(workspaces: &[PathBuf]) -> bool {
-    for ws in workspaces {
-        let tasks_dir = ws.join("odd").join("tasks");
-        if tasks_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&tasks_dir) {
-                let found = entries.filter_map(Result::ok).any(|e| {
-                    e.path()
-                        .extension()
-                        .map_or(false, |ext| ext.eq_ignore_ascii_case("md"))
-                });
-                if found {
-                    return true;
+fn has_active_odd_task(workspace_root: &Path) -> bool {
+    let tasks_dir = workspace_root.join("odd").join("tasks");
+    if let Ok(entries) = fs::read_dir(tasks_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Some(ext) = p.extension() {
+                    if ext == "md" || ext == "json" {
+                        if let Ok(metadata) = fs::metadata(&p) {
+                            if metadata.len() > 20 {
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -135,80 +126,151 @@ fn has_active_task_in_workspaces(workspaces: &[PathBuf]) -> bool {
     false
 }
 
-fn handle_pre_gate(input_str: &str) -> io::Result<()> {
-    if input_str.is_empty() {
-        return deny("[ERROR MECÁNICO ODD]: Entrada vacía recibida en pre-gate.");
+fn handle_pre_tool() {
+    let mut buffer = Vec::new();
+    if io::stdin().read_to_end(&mut buffer).is_err() || buffer.is_empty() {
+        let resp = HookDecision {
+            decision: "deny".into(),
+            reason: Some("[ERROR MECÁNICO ODD]: Entrada de hook vacía.".into()),
+        };
+        println!("{}", serde_json::to_string(&resp).unwrap());
+        return;
     }
 
-    let input: HookInput = match serde_json::from_str(input_str) {
-        Ok(v) => v,
-        Err(_) => return deny("[ERROR MECÁNICO ODD]: Payload corrupto o JSON inválido recibido en pre-gate."),
+    let clean_str = String::from_utf8_lossy(&buffer).trim_start_matches('\u{feff}').to_string();
+    let payload: ToolUsePayload = match serde_json::from_str(&clean_str) {
+        Ok(p) => p,
+        Err(_) => {
+            let resp = HookDecision {
+                decision: "deny".into(),
+                reason: Some("[ERROR MECÁNICO ODD]: Payload corrupto o JSON inválido en PreToolUse.".into()),
+            };
+            println!("{}", serde_json::to_string(&resp).unwrap());
+            return;
+        }
     };
 
-    let mut workspaces: Vec<PathBuf> = Vec::new();
-    if let Some(ws_list) = input.workspacePaths {
-        for w in ws_list {
-            if !w.is_empty() {
-                workspaces.push(normalize_path(Path::new(&w)));
-            }
+    let tool_name = payload.tool_name
+        .or_else(|| payload.tool_call.as_ref().and_then(|tc| tc.name.clone()))
+        .unwrap_or_default();
+
+    let args = payload.tool_args
+        .or_else(|| payload.tool_call.and_then(|tc| tc.args))
+        .unwrap_or(serde_json::Value::Null);
+
+    // Permissive tools (reads, exploration, non-mutating inspection)
+    if tool_name == "read_file" || tool_name == "search_codebase" || tool_name == "list_dir" || tool_name == "ask_question" {
+        println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
+        return;
+    }
+
+    if tool_name == "write_file" || tool_name == "edit_file" {
+        let raw_path = args.get("Path")
+            .or_else(|| args.get("path"))
+            .or_else(|| args.get("filePath"))
+            .or_else(|| args.get("TargetFile"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let target_path = normalize_lexical_path(Path::new(raw_path));
+        let path_str = target_path.to_string_lossy();
+
+        // 1. Scaffolding, configs, types, tests, docs are PERMISSIVE (OpenHands/Aider pattern)
+        if is_scaffolding_or_non_production(&path_str) {
+            println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
+            return;
         }
-    }
 
-    let target_path_opt = input.toolCall
-        .as_ref()
-        .and_then(|t| t.args.as_ref())
-        .and_then(extract_target_path);
-
-    // If target belongs to an existing workspace root with odd/tasks, add it
-    if let Some(target) = target_path_opt {
-        if let Some(inferred_ws) = resolve_target_workspace(target) {
-            if !workspaces.contains(&inferred_ws) {
-                workspaces.push(inferred_ws);
-            }
+        // 2. Production code mutation requires active ODD task
+        let ws = resolve_workspace_root(&target_path);
+        if has_active_odd_task(&ws) {
+            println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
+            return;
         }
-    }
 
-    if workspaces.is_empty() {
-        workspaces.push(normalize_path(Path::new(".")));
-    }
-
-    if let Some(target) = target_path_opt {
-        if is_spec_file(target, &workspaces) {
-            return allow();
-        }
-    }
-
-    if !has_active_task_in_workspaces(&workspaces) {
-        return deny(
-            "[ERROR MECÁNICO ODD]: Modificación de código denegada.\n\
-             No existe un slice de tarea activo en 'odd/tasks/<feature>.md'.\n\
-             Requisito previo obligatorio: Redacta primero la especificación de la tarea con:\n\
-             1) Objetivo, 2) Archivos a tocar, 3) Test de verificación."
+        // 3. Deny with Structured Guidance (Zero-Turn Recovery)
+        let guidance = format!(
+            "[FSM ODD VETO]: Mutación de código de producción bloqueada en '{}'.\n\
+            Fase actual: SCOUT / SPEC PENDIENTE.\n\
+            Para editar archivos de producción, redacta primero la especificación en 'odd/tasks/<feature>.md' con:\n\
+            1) Objetivo\n2) Archivos a tocar\n3) Test de verificación.",
+            path_str
         );
+
+        let resp = HookDecision {
+            decision: "deny".into(),
+            reason: Some(guidance),
+        };
+        println!("{}", serde_json::to_string(&resp).unwrap());
+        return;
     }
 
-    allow()
+    println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
 }
 
-fn handle_session_init() -> io::Result<()> {
-    let _ = std::process::Command::new("engram")
-        .arg("context")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
+fn handle_stop_gate() {
+    let mut buffer = Vec::new();
+    let _ = io::stdin().read_to_end(&mut buffer);
 
-    println!("{{}}");
-    Ok(())
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    
+    // Check if there is an active ODD task in progress
+    if has_active_odd_task(&cwd) {
+        // In the future, check if receipt exists. If spec exists without receipt:
+        let receipts_dir = cwd.join("odd").join("receipts");
+        let has_receipt = fs::read_dir(receipts_dir).map(|mut d| d.next().is_some()).unwrap_or(false);
+
+        if !has_receipt {
+            // Task is in progress but not closed! Force continuation (Claude Code autonomy pattern)
+            let resp = HookDecision {
+                decision: "continue".into(),
+                reason: Some("[MANDATO DE CIERRE AUTÓNOMO]: La tarea ODD sigue activa sin recibo de verificación en 'odd/receipts/'. Continúa ejecutando hasta compilar o verificar con tests.".into()),
+            };
+            println!("{}", serde_json::to_string(&resp).unwrap());
+            return;
+        }
+    }
+
+    // Normal stop allowed
+    println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
 }
 
-fn allow() -> io::Result<()> {
-    let res = PreToolOutput { decision: "allow", reason: None };
-    println!("{}", serde_json::to_string(&res)?);
-    Ok(())
+fn handle_pre_invocation() {
+    // ReFold Projection: Inject clean ephemeral guidance without dirtying long-term transcript
+    let resp = serde_json::json!({
+        "injectSteps": [
+            {
+                "ephemeralMessage": "[AUTONOMOUS EXECUTION HARNESS]: Mantén propiedad completa de la solución. Ejecuta herramientas sin pedir confirmación intermedia hasta verificar el resultado final."
+            }
+        ]
+    });
+    println!("{}", serde_json::to_string(&resp).unwrap());
 }
 
-fn deny(msg: &str) -> io::Result<()> {
-    let res = PreToolOutput { decision: "deny", reason: Some(msg) };
-    println!("{}", serde_json::to_string(&res)?);
-    Ok(())
+fn handle_session_init() {
+    let resp = serde_json::json!({
+        "injectSteps": [
+            {
+                "systemMessage": {
+                    "systemMessage": "[AGY OPTIMIZER ACTIVE]: Arnés cognitivo determinista en Rust activo. FSM Coercitiva, ciclo ODD guiado y ReFold KV-Cache protection."
+                }
+            }
+        ]
+    });
+    println!("{}", serde_json::to_string(&resp).unwrap());
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let mode = args.get(1).map(|s| s.as_str()).unwrap_or("pre-gate");
+
+    match mode {
+        "pre-gate" => handle_pre_tool(),
+        "stop-gate" => handle_stop_gate(),
+        "pre-invocation" => handle_pre_invocation(),
+        "session-init" => handle_session_init(),
+        _ => {
+            println!("{}", serde_json::to_string(&HookDecision { decision: "allow".into(), reason: None }).unwrap());
+        }
+    }
 }
