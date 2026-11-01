@@ -1,0 +1,24 @@
+{
+  "agy-core-guard": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "./bin/agy-hook.exe session-init",
+        "timeout": 5
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "(write_file|edit_file)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./bin/agy-hook.exe pre-gate",
+            "timeout": 3
+          }
+        ]
+      }
+    ]
+  }
+}
