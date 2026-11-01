@@ -1,0 +1,10 @@
+{
+  "name": "agy-optimizer",
+  "displayName": "AGY Context & Harness Optimizer",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight deterministic railway guard, KV-cache preservation, invisible Engram memory lifecycle, and anti-rot architecture for Antigravity.",
+  "author": {
+    "name": "Antigravity Engineering"
+  },
+  "license": "Apache-2.0"
+}
