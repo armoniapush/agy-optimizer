@@ -2,7 +2,8 @@
 ## The Ultra-Lightweight, Zero-Rot Engine for Google Antigravity
 
 > **Target Platform:** Google Antigravity (AGY Runtime 2.0+ / Windows NT & Unix)  
-> **Core Paradigms:** Deterministic Railway Guards, KV-Cache Invariant Prefixes, Invisible Memory Lifecycles, and Progressive Gateway Isolation.
+> **Core Paradigms:** Deterministic Railway Guards, KV-Cache Invariant Prefixes, Invisible Memory Lifecycles, and Progressive Gateway Isolation.  
+> **Lineage & Acknowledgements:** Built upon the foundational paradigms of **Gentle AI & Organic Driven Development (ODD)** by [Gentleman Programming](https://github.com/Gentleman-Programming/gentle-ai) and the persistent memory model of [Engram](https://github.com/Gentleman-Programming/engram).
 
 ---
 
